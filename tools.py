@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Dict
 
 import financedatabase as fd
 import numpy as np
@@ -9,6 +10,8 @@ import requests
 from dotenv import load_dotenv
 from financetoolkit import Toolkit
 from typing_extensions import Annotated
+
+from finmodels_tools import FinModelsTools
 
 load_dotenv()
 
@@ -64,6 +67,7 @@ def perform_valuation_analysis(
     """Perform comprehensive valuation analysis using FinanceToolkit."""
     try:
         company = Toolkit(symbol, api_key=os.getenv("FMP_API_KEY"))
+        fin_models = FinModelsTools(os.getenv("FMP_API_KEY"))
 
         try:
             ev = company.models.get_enterprise_value_breakdown()
@@ -134,13 +138,6 @@ def perform_valuation_analysis(
             intrinsic_value_dict = intrinsic_value.to_dict("records")
         except Exception:
             intrinsic_value_dict = [{"Error": "Intrinsic Value calculation failed"}]
-
-        # try:
-        #     pvgo = company.models.get_present_value_of_growth_opportunities()
-        #     pvgo_dict = pvgo.to_dict("records")
-        # except Exception:
-        #     pvgo_dict = [{"Error": "PVGO calculation failed"}]
-
         try:
             piotroski = company.models.get_piotroski_score()
             piotroski_dict = piotroski.to_dict("records")
@@ -152,6 +149,46 @@ def perform_valuation_analysis(
             gorden_dict = gorden.to_dict("records")
         except Exception:
             gorden_dict = [{"Error": "Gorden growth model calculation failed"}]
+
+        try:
+            lbo_metrics = fin_models.calculate_lbo_metrics(symbol)
+            lbo_dict = (
+                lbo_metrics
+                if lbo_metrics
+                else {"Error": "LBO metrics calculation failed"}
+            )
+        except Exception:
+            lbo_dict = {"Error": "LBO metrics calculation failed"}
+
+        try:
+            ipo_valuation = fin_models.calculate_ipo_valuation(symbol)
+            ipo_dict = (
+                ipo_valuation
+                if ipo_valuation
+                else {"Error": "IPO valuation calculation failed"}
+            )
+        except Exception:
+            ipo_dict = {"Error": "IPO valuation calculation failed"}
+
+        try:
+            lbo_sensitivity = fin_models.perform_lbo_sensitivity_analysis(symbol)
+            lbo_sensitivity_dict = (
+                lbo_sensitivity
+                if lbo_sensitivity
+                else {"Error": "LBO sensitivity analysis failed"}
+            )
+        except Exception:
+            lbo_sensitivity_dict = {"Error": "LBO sensitivity analysis failed"}
+
+        try:
+            ipo_sensitivity = fin_models.perform_ipo_sensitivity_analysis(symbol)
+            ipo_sensitivity_dict = (
+                ipo_sensitivity
+                if ipo_sensitivity
+                else {"Error": "IPO sensitivity analysis failed"}
+            )
+        except Exception:
+            ipo_sensitivity_dict = {"Error": "IPO sensitivity analysis failed"}
 
         output_path = Path("outputs/fmp_data") / f"{symbol}_valuation.md"
         report = f"""# Valuation Analysis for {symbol}
@@ -191,6 +228,18 @@ def perform_valuation_analysis(
 
 ## Gorden Growth Model
 {gorden.to_markdown() if not isinstance(gorden_dict[0].get("Error"), str) else "Error calculating Gorden Growth Model"}
+
+## LBO Analysis
+{format_lbo_metrics(lbo_dict) if not isinstance(lbo_dict.get("Error"), str) else "Error calculating LBO Metrics"}
+
+## IPO Valuation
+{format_ipo_valuation(ipo_dict) if not isinstance(ipo_dict.get("Error"), str) else "Error calculating IPO Valuation"}
+
+## LBO Sensitivity Analysis
+{format_lbo_sensitivity(lbo_sensitivity_dict) if not isinstance(lbo_sensitivity_dict.get("Error"), str) else "Error calculating LBO Sensitivity Analysis"}
+
+## IPO Sensitivity Analysis
+{format_ipo_sensitivity(ipo_sensitivity_dict) if not isinstance(ipo_sensitivity_dict.get("Error"), str) else "Error calculating IPO Sensitivity Analysis"}
 """
 
         with open(output_path, "w") as f:
@@ -202,6 +251,113 @@ def perform_valuation_analysis(
         }
     except Exception as e:
         return {"status": "error", "message": f"Error performing valuation: {str(e)}"}
+
+
+def format_lbo_metrics(metrics: Dict) -> str:
+    """Format LBO metrics for markdown report."""
+
+    irr = metrics["returns"]["irr"]
+    if isinstance(irr, str):
+        irr_display = irr
+    else:
+        irr_display = f"{irr:.2%}"
+
+    return f"""### Purchase Price
+- Enterprise Value: ${metrics['purchase_price']['enterprise_value']:,.2f}
+- Equity Contribution: ${metrics['purchase_price']['equity_contribution']:,.2f}
+- Debt Financing: ${metrics['purchase_price']['debt_financing']:,.2f}
+- Debt Ratio: {metrics['purchase_price']['debt_ratio']:.2%}
+
+### Projections
+- Exit Value: ${metrics['projections']['exit_value']:,.2f}
+- Remaining Debt: ${metrics['projections']['remaining_debt']:,.2f}
+- Projected Free Cash Flow:
+  {', '.join(f'Year {i+1}: ${fcf:,.2f}' for i, fcf in enumerate(metrics['projections']['projected_fcf']))}
+
+### Returns
+- IRR: {irr_display}
+- MOIC: {metrics['returns']['moic']:.2f}x
+- Exit Equity: ${metrics['returns']['exit_equity']:,.2f}"""
+
+
+def format_ipo_valuation(valuation: Dict) -> str:
+    """Format IPO valuation for markdown report."""
+
+    def format_multiple(value):
+        return f"{value:.2f}x" if value != "N/A" else "N/A"
+
+    return f"""### Valuation Metrics
+- Enterprise Value: ${valuation['valuation']['enterprise_value']:,.2f}
+- Equity Value: ${valuation['valuation']['equity_value']:,.2f}
+- EV/Revenue Multiple: {format_multiple(valuation['valuation']['ev_revenue_multiple'])}
+- EV/EBITDA Multiple: {format_multiple(valuation['valuation']['ev_ebitda_multiple'])}
+
+### Offering Details
+- Shares Outstanding: {valuation['offering']['shares_outstanding']:,.0f}
+- Float Shares: {valuation['offering']['float_shares']:,.0f}
+- Price Range:
+  - Low: ${valuation['offering']['price_range']['low']:,.2f}
+  - Base: ${valuation['offering']['price_range']['base']:,.2f}
+  - High: ${valuation['offering']['price_range']['high']:,.2f}
+
+### Comparable Analysis
+- Sector P/E: {valuation['comparables']['sector_pe']:.2f}x
+- Revenue Growth: {valuation['comparables']['revenue_growth']:.2%}
+- EBIT Growth: {valuation['comparables']['ebit_growth']:.2%}
+- Peer Companies: {', '.join(valuation['comparables']['peer_companies'])}"""
+
+
+def format_lbo_sensitivity(sensitivity: Dict) -> str:
+    """Format LBO sensitivity analysis for markdown report."""
+    unique_growth_rates = sorted(set(sensitivity["fcf_growth_rate"]))
+    unique_exit_multiples = sorted(set(sensitivity["exit_multiple"]))
+
+    table = "### LBO Sensitivity Analysis\n\n"
+    table += "Selected scenarios showing IRR variation by FCF Growth Rate and Exit Multiple (at 8% interest rate):\n\n"
+    table += "| FCF Growth | Exit Multiple | IRR | MOIC |\n"
+    table += "|------------|---------------|-----|------|\n"
+
+    base_rate_indices = [
+        i for i, rate in enumerate(sensitivity["interest_rate"]) if rate == 0.08
+    ]
+
+    for growth_rate in unique_growth_rates:
+        for multiple in unique_exit_multiples:
+            for idx in base_rate_indices:
+                if (
+                    sensitivity["fcf_growth_rate"][idx] == growth_rate
+                    and sensitivity["exit_multiple"][idx] == multiple
+                ):
+                    irr = sensitivity["irr"][idx]
+                    moic = sensitivity["moic"][idx]
+
+                    if isinstance(irr, float) and not np.isnan(irr):
+                        irr_display = f"{irr:.1%}"
+                    else:
+                        irr_display = "N/A"
+
+                    table += f"| {growth_rate:.1%} | {multiple:.1f}x | {irr_display} | {moic:.2f}x |\n"
+                    break
+
+    return table
+
+
+def format_ipo_sensitivity(sensitivity: Dict) -> str:
+    """Format IPO sensitivity analysis for markdown report."""
+    table = "### IPO Sensitivity Analysis\n\n"
+    table += "Price Range and Float Analysis:\n\n"
+    table += "| Target Float | Price Buffer | Price Range | Float Shares |\n"
+    table += "|--------------|--------------|-------------|-------------|\n"
+
+    unique_floats = sorted(set(sensitivity["target_float"]))
+
+    for float_pct in unique_floats:
+        idx = sensitivity["target_float"].index(float_pct)
+
+        price_range = f"${sensitivity['price_low'][idx]:,.0f} - ${sensitivity['price_high'][idx]:,.0f}"
+        table += f"| {float_pct:.1%} | {sensitivity['price_range_buffer'][idx]:.1%} | {price_range} | {sensitivity['float_shares'][idx]:,.0f} |\n"
+
+    return table
 
 
 def get_company_profile(symbol: Annotated[str, "Company symbol"]) -> dict:
